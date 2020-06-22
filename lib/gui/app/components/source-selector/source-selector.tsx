@@ -18,9 +18,10 @@ import {
 	faFile,
 	faLink,
 	faExclamationTriangle,
+	faCopy,
 } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { sourceDestination } from 'etcher-sdk';
+import { sourceDestination, scanner } from 'etcher-sdk';
 import { ipcRenderer, IpcRendererEvent } from 'electron';
 import * as _ from 'lodash';
 import { GPTPartition, MBRPartition } from 'partitioninfo';
@@ -58,6 +59,7 @@ import { middleEllipsis } from '../../utils/middle-ellipsis';
 import { SVGIcon } from '../svg-icon/svg-icon';
 
 import ImageSvg from '../../../assets/image.svg';
+import { DriveSelector } from '../drive-selector/drive-selector';
 
 const recentUrlImagesKey = 'recentUrlImages';
 
@@ -197,7 +199,12 @@ interface Flow {
 const FlowSelector = styled(
 	({ flow, ...props }: { flow: Flow; props?: ButtonProps }) => {
 		return (
-			<StepButton plain onClick={flow.onClick} icon={flow.icon} {...props}>
+			<StepButton
+				plain
+				onClick={(evt) => flow.onClick(evt)}
+				icon={flow.icon}
+				{...props}
+			>
 				{flow.label}
 			</StepButton>
 		);
@@ -219,8 +226,15 @@ const FlowSelector = styled(
 
 export type Source =
 	| typeof sourceDestination.File
+	| typeof sourceDestination.BlockDevice
 	| typeof sourceDestination.Http;
 
+export interface SourceMetadata extends sourceDestination.Metadata {
+	hasMBR: boolean;
+	partitions: MBRPartition[] | GPTPartition[];
+	path: string;
+	extension?: string;
+}
 export interface SourceOptions {
 	imagePath: string;
 	SourceType: Source;
@@ -238,6 +252,7 @@ interface SourceSelectorState {
 	warning: { message: string; title: string | null } | null;
 	showImageDetails: boolean;
 	showURLSelector: boolean;
+	showDriveSelector: boolean;
 }
 
 export class SourceSelector extends React.Component<
@@ -245,7 +260,6 @@ export class SourceSelector extends React.Component<
 	SourceSelectorState
 > {
 	private unsubscribe: () => void;
-	private afterSelected: SourceSelectorProps['afterSelected'];
 
 	constructor(props: SourceSelectorProps) {
 		super(props);
@@ -254,15 +268,8 @@ export class SourceSelector extends React.Component<
 			warning: null,
 			showImageDetails: false,
 			showURLSelector: false,
+			showDriveSelector: false,
 		};
-
-		this.openImageSelector = this.openImageSelector.bind(this);
-		this.openURLSelector = this.openURLSelector.bind(this);
-		this.reselectImage = this.reselectImage.bind(this);
-		this.onSelectImage = this.onSelectImage.bind(this);
-		this.onDrop = this.onDrop.bind(this);
-		this.showSelectedImageDetails = this.showSelectedImageDetails.bind(this);
-		this.afterSelected = props.afterSelected.bind(this);
 	}
 
 	public componentDidMount() {
@@ -295,13 +302,7 @@ export class SourceSelector extends React.Component<
 		selectionState.deselectImage();
 	}
 
-	private selectImage(
-		image: sourceDestination.Metadata & {
-			path: string;
-			extension: string;
-			hasMBR: boolean;
-		},
-	) {
+	private selectImage(image: SourceMetadata) {
 		try {
 			let message = null;
 			let title = null;
@@ -371,36 +372,15 @@ export class SourceSelector extends React.Component<
 
 		try {
 			const innerSource = await source.getInnerSource();
-			const metadata = (await innerSource.getMetadata()) as sourceDestination.Metadata & {
-				hasMBR: boolean;
-				partitions: MBRPartition[] | GPTPartition[];
-				path: string;
-				extension: string;
-			};
-			const partitionTable = await innerSource.getPartitionTable();
-			if (partitionTable) {
-				metadata.hasMBR = true;
-				metadata.partitions = partitionTable.partitions;
-			} else {
-				metadata.hasMBR = false;
-			}
-			metadata.path = imagePath;
+			const metadata = await this.getMetadata(innerSource, imagePath);
 			metadata.extension = path.extname(imagePath).slice(1);
 			this.selectImage(metadata);
-			this.afterSelected({
+			this.props.afterSelected({
 				imagePath,
 				SourceType,
 			});
 		} catch (error) {
-			const imageError = errors.createUserError({
-				title: 'Error opening image',
-				description: messages.error.openImage(
-					path.basename(imagePath),
-					error.message,
-				),
-			});
-			osDialog.showError(imageError);
-			analytics.logException(error);
+			this.handleError('Error opening image', path.basename(imagePath), error);
 		} finally {
 			try {
 				await source.close();
@@ -408,6 +388,52 @@ export class SourceSelector extends React.Component<
 				// Noop
 			}
 		}
+	}
+
+	private handleError(title: string, sourcePath: string, error: any) {
+		const imageError = errors.createUserError({
+			title,
+			description: messages.error.openImage(sourcePath, error.message),
+		});
+		osDialog.showError(imageError);
+		analytics.logException(error);
+	}
+
+	private async selectDriveAsImage(drive: scanner.adapters.DrivelistDrive) {
+		const source = new sourceDestination.BlockDevice({ drive });
+		const devicePath = source.devicePath || source.device;
+		try {
+			const metadata = await this.getMetadata(source, devicePath);
+			this.selectImage(metadata);
+			this.props.afterSelected({
+				imagePath: devicePath,
+				SourceType: sourceDestination.BlockDevice,
+			});
+		} catch (error) {
+			this.handleError('Error opening drive', devicePath, error);
+		} finally {
+			try {
+				await source.close();
+			} catch (error) {
+				// Noop
+			}
+		}
+	}
+
+	private async getMetadata(
+		source: sourceDestination.SourceDestination | sourceDestination.BlockDevice,
+		sourcePath: string,
+	) {
+		const metadata = (await source.getMetadata()) as SourceMetadata;
+		const partitionTable = await source.getPartitionTable();
+		if (partitionTable) {
+			metadata.hasMBR = true;
+			metadata.partitions = partitionTable.partitions;
+		} else {
+			metadata.hasMBR = false;
+		}
+		metadata.path = sourcePath;
+		return metadata;
 	}
 
 	private async openImageSelector() {
@@ -448,6 +474,14 @@ export class SourceSelector extends React.Component<
 		});
 	}
 
+	private openDriveSelector() {
+		analytics.logEvent('Open drive selector');
+
+		this.setState({
+			showDriveSelector: true,
+		});
+	}
+
 	private onDragOver(event: React.DragEvent<HTMLDivElement>) {
 		// Needed to get onDrop events on div elements
 		event.preventDefault();
@@ -471,7 +505,7 @@ export class SourceSelector extends React.Component<
 	// TODO add a visual change when dragging a file over the selector
 	public render() {
 		const { flashing } = this.props;
-		const { showImageDetails, showURLSelector } = this.state;
+		const { showImageDetails, showURLSelector, showDriveSelector } = this.state;
 
 		const hasImage = selectionState.hasImage();
 
@@ -486,9 +520,13 @@ export class SourceSelector extends React.Component<
 				<Flex
 					flexDirection="column"
 					alignItems="center"
-					onDrop={this.onDrop}
-					onDragEnter={this.onDragEnter}
-					onDragOver={this.onDragOver}
+					onDrop={(evt: React.DragEvent<HTMLDivElement>) => this.onDrop(evt)}
+					onDragEnter={(evt: React.DragEvent<HTMLDivElement>) =>
+						this.onDragEnter(evt)
+					}
+					onDragOver={(evt: React.DragEvent<HTMLDivElement>) =>
+						this.onDragOver(evt)
+					}
 				>
 					<SVGIcon
 						contents={imageLogo}
@@ -502,13 +540,17 @@ export class SourceSelector extends React.Component<
 						<>
 							<StepNameButton
 								plain
-								onClick={this.showSelectedImageDetails}
+								onClick={() => this.showSelectedImageDetails()}
 								tooltip={imageName || imageBasename}
 							>
 								{middleEllipsis(imageName || imageBasename, 20)}
 							</StepNameButton>
 							{!flashing && (
-								<ChangeButton plain mb={14} onClick={this.reselectImage}>
+								<ChangeButton
+									plain
+									mb={14}
+									onClick={() => this.reselectImage()}
+								>
 									Remove
 								</ChangeButton>
 							)}
@@ -519,7 +561,7 @@ export class SourceSelector extends React.Component<
 							<FlowSelector
 								key="Flash from file"
 								flow={{
-									onClick: this.openImageSelector,
+									onClick: () => this.openImageSelector(),
 									label: 'Flash from file',
 									icon: <FontAwesomeIcon icon={faFile} />,
 								}}
@@ -527,9 +569,17 @@ export class SourceSelector extends React.Component<
 							<FlowSelector
 								key="Flash from URL"
 								flow={{
-									onClick: this.openURLSelector,
+									onClick: () => this.openURLSelector(),
 									label: 'Flash from URL',
 									icon: <FontAwesomeIcon icon={faLink} />,
+								}}
+							/>
+							<FlowSelector
+								key="Clone drive"
+								flow={{
+									onClick: () => this.openDriveSelector(),
+									label: 'Clone drive',
+									icon: <FontAwesomeIcon icon={faCopy} />,
 								}}
 							/>
 						</>
@@ -605,6 +655,33 @@ export class SourceSelector extends React.Component<
 							});
 							this.setState({
 								showURLSelector: false,
+							});
+						}}
+					/>
+				)}
+
+				{showDriveSelector && (
+					<DriveSelector
+						multipleSelection={false}
+						titleLabel="Select source"
+						emptyListLabel="Plug a source"
+						cancel={() => {
+							this.setState({
+								showDriveSelector: false,
+							});
+						}}
+						done={async (drives: scanner.adapters.DrivelistDrive[]) => {
+							if (!drives.length) {
+								analytics.logEvent('Drive selector closed');
+								this.setState({
+									showDriveSelector: false,
+								});
+								return;
+							}
+
+							await this.selectDriveAsImage(drives[0]);
+							this.setState({
+								showDriveSelector: false,
 							});
 						}}
 					/>
