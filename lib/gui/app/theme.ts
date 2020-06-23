@@ -67,6 +67,16 @@ export const colors = {
 
 export const theme = {
 	colors,
+	global: {
+		font: {
+			size: 16,
+		},
+		text: {
+			medium: {
+				size: 16,
+			},
+		},
+	},
 	button: {
 		border: {
 			width: '0',
@@ -79,6 +89,7 @@ export const theme = {
 			&& {
 				width: 200px;
 				height: 48px;
+				font-size: 16px;
 
 				:disabled {
 					background-color: ${colors.dark.disabled.background};
