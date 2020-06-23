@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+# v1.5.101
+## (2020-06-23)
+
+* Remove unused scss [Lorenzo Alberto Maria Ambrosi]
+* Remove unused warning in settings [Lorenzo Alberto Maria Ambrosi]
+* Refactor UI without bootstrap & flexboxgrid [Lorenzo Alberto Maria Ambrosi]
+* Restyle modals [Lorenzo Alberto Maria Ambrosi]
+* Remove bootstrap & flexboxgrid [Lorenzo Alberto Maria Ambrosi]
+* Rework and move flashing view elements [Lorenzo Alberto Maria Ambrosi]
+* Refactor UI grid to use rendition [Lorenzo Alberto Maria Ambrosi]
+
 # v1.5.100
 ## (2020-06-22)
 
